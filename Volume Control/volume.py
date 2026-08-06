@@ -44,6 +44,7 @@ mp_draw = mp.solutions.drawing_utils
 hands = mp_hands.Hands(
     static_image_mode=False,
     max_num_hands=1,
+    model_complexity=0,  # 0 = lite model, much faster, small accuracy tradeoff
     min_detection_confidence=0.7,
     min_tracking_confidence=0.7,
 )
@@ -78,9 +79,14 @@ def safe_hypot(x, y):
 
 
 def main():
-    cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1248)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 936)
+    # CAP_DSHOW is generally faster/more responsive than the default backend
+    # on Windows. Lower resolution than before (still plenty for hand
+    # tracking) and a buffer size of 1 so we always grab the newest frame
+    # instead of processing a backlog of stale ones.
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     if not cap.isOpened():
         print("ERROR: Could not open webcam. Check that it's connected and not in use.")
