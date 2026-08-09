@@ -38,15 +38,19 @@ while True:
         wrist = landmarks[WRIST]
         wx, wy = wrist.x * w, wrist.y * h
 
+        ratio_values = []
+
         for i, (tip_idx, base_idx) in enumerate(FINGER_PAIRS):
             tip, base = landmarks[tip_idx], landmarks[base_idx]
             tip_dist = math.hypot(tip.x * w - wx, tip.y * h - wy)
             base_dist = math.hypot(base.x * w - wx, base.y * h - wy)
             ratio = tip_dist / base_dist if base_dist > 0 else 0
+            ratio_values.append(ratio)
 
+            average_ratio = sum(ratio_values) / len(ratio_values)
             cv2.putText(
-                frame, f"{FINGER_NAMES[i]}: {ratio:.2f}", (20, 40 + i * 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2,
+            frame, f"Average: {average_ratio:.2f}", (20, 40 + len(FINGER_PAIRS) * 30),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2,
             )
 
     cv2.imshow("Finger Ratio Diagnostic", frame)

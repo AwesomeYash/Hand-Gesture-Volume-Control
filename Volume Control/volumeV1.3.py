@@ -4,6 +4,9 @@ Hand Gesture Volume Control
 Pinch your thumb and index finger together to lower the volume.
 Spread them apart to raise the volume.
 
+Make a fist to mute. Show an open palm to unmute (you'll get a
+notification when it does).
+
 Controls:
     q  -> quit the program
 """
@@ -60,13 +63,18 @@ MIN_DIST = 25    # fingers touching -> 0% volume
 MAX_DIST = 200   # fingers fully spread -> 100% volume
 
 # ---------------------------------------------------------------------------
-# Fist / open-palm detection (same approach as brightness.py)
-# Ratio of fingertip-to-wrist distance vs. knuckle-to-wrist distance.
-# A closed fist pulls fingertips in close to the wrist (small ratio);
-# an open palm extends them far out (large ratio).
+# Fist / open-palm detection
+# Per-finger ratio of fingertip-to-wrist distance vs. knuckle-to-wrist
+# distance. A curled finger sits close to the wrist (small ratio); an
+# extended finger reaches far out (large ratio).
+#
+# Checked per-finger rather than averaged: averaging can misread a
+# pointing gesture (3 fingers curled, index extended) as a fist, since
+# the curled fingers drag the average down below the fist threshold
+# even though the hand isn't actually a fist.
 # ---------------------------------------------------------------------------
-FIST_RATIO = 0.6   # ratio below this -> fist
-PALM_RATIO = 1.3   # ratio above this -> open palm
+FIST_RATIO = 0.8   # a finger below this ratio counts as curled
+PALM_RATIO = 1.7   # a finger above this ratio counts as extended
 
 # Landmark indices: [fingertip, matching base knuckle] for the 4 fingers
 # (thumb excluded -- its geometry doesn't fit the same ratio cleanly)
@@ -74,9 +82,9 @@ FINGER_PAIRS = [(8, 5), (12, 9), (16, 13), (20, 17)]
 WRIST = 0
 
 
-def get_hand_shape_ratio(landmarks, w, h):
-    """Average (fingertip-to-wrist / knuckle-to-wrist) distance ratio
-    across the 4 fingers. Low = fist, high = open palm."""
+def get_finger_ratios(landmarks, w, h):
+    """Per-finger (fingertip-to-wrist / knuckle-to-wrist) distance ratio
+    for each of the 4 fingers."""
     wrist = landmarks[WRIST]
     wx, wy = wrist.x * w, wrist.y * h
 
@@ -86,18 +94,29 @@ def get_hand_shape_ratio(landmarks, w, h):
         base = landmarks[base_idx]
         tip_dist = math.hypot(tip.x * w - wx, tip.y * h - wy)
         base_dist = math.hypot(base.x * w - wx, base.y * h - wy)
-        if base_dist > 0:
-            ratios.append(tip_dist / base_dist)
+        ratios.append(tip_dist / base_dist if base_dist > 0 else 1.0)
 
-    return sum(ratios) / len(ratios) if ratios else 1.0
+    return ratios
+
+
+def is_fist_shape(ratios):
+    return all(r < FIST_RATIO for r in ratios)
+
+
+def is_palm_shape(ratios):
+    return all(r > PALM_RATIO for r in ratios)
 
 
 def notify_unmuted():
     """Fire the Windows toast in a background thread so it never blocks
-    the main video loop (toast() can take a moment to hand off to the
-    OS notification service)."""
+    the main video loop. on_dismissed is set to a no-op because
+    win11toast's default (print) would otherwise spam the console every
+    time a toast auto-expires."""
     threading.Thread(
-        target=lambda: toast("Volume Unmuted", "Gesture control resumed."),
+        target=lambda: toast(
+            "Volume Unmuted", "Gesture control resumed.",
+            on_dismissed=lambda *args: None,
+        ),
         daemon=True,
     ).start()
 
@@ -117,7 +136,7 @@ def safe_hypot(x, y):
     if ax == 0.0:
         return 0.0
         
-    # 4. Factor out the larger number: ax * sqrt(1 + (ay/ax)^2)
+    # 4. Factor out the larger number: ax * sqrt(1 + (ay/ax) ** 2)
     return ax * ((1.0 + (ay / ax) ** 2) ** 0.5)
 """
 
@@ -128,8 +147,8 @@ def main():
     # tracking) and a buffer size of 1 so we always grab the newest frame
     # instead of processing a backlog of stale ones.
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     if not cap.isOpened():
@@ -149,38 +168,29 @@ def main():
 
         # Color conversion: OpenCV uses BGR internally; MediaPipe expects RGB. Easy thing to forget when combining CV libraries.
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = hands.process(rgb_frame)                      
+        results = hands.process(rgb_frame)
 
         vol_percent = None
 
         if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+            hand_landmarks = results.multi_hand_landmarks[0]
+            mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+            landmarks = hand_landmarks.landmark
 
-                landmarks = hand_landmarks.landmark
+            # --- Check fist / open-palm shape first; these gestures
+            # gate whether pinch-based volume control is active at all.
+            finger_ratios = get_finger_ratios(landmarks, w, h)
 
-                # --- Check fist / open-palm shape first; these gestures
-                # gate whether pinch-based volume control is active at all.
-                shape_ratio = get_hand_shape_ratio(landmarks, w, h)
+            if not is_muted and is_fist_shape(finger_ratios):
+                is_muted = True
+                volume_interface.SetMute(1, None)
 
-                if not is_muted and shape_ratio < FIST_RATIO:
-                    is_muted = True
-                    volume_interface.SetMute(1, None)
+            elif is_muted and is_palm_shape(finger_ratios):
+                is_muted = False
+                volume_interface.SetMute(0, None)
+                notify_unmuted()
 
-                elif is_muted and shape_ratio > PALM_RATIO:
-                    is_muted = False
-                    volume_interface.SetMute(0, None)
-                    notify_unmuted()
-
-                if is_muted:
-                    # While muted, skip pinch tracking entirely -- freeze
-                    # volume control until an open palm is shown.
-                    cv2.putText(
-                        frame, "MUTED - show open palm to unmute", (20, 80),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2,
-                    )
-                    continue
-
+            if not is_muted:
                 # Landmark 4 = thumb tip, Landmark 8 = index finger tip
                 thumb_tip = landmarks[4]
                 index_tip = landmarks[8]
@@ -211,6 +221,11 @@ def main():
                 # Visual feedback: turn the connecting line green when very close
                 if distance < MIN_DIST + 10:
                     cv2.circle(frame, (cx, cy), 8, (0, 0, 255), cv2.FILLED)
+            else:
+                cv2.putText(
+                    frame, "MUTED - show open palm to unmute", (20, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2,
+                )
 
         # --- Draw the volume bar UI ---
         bar_x, bar_y, bar_w, bar_h = 50, 150, 35, 300
