@@ -1,14 +1,14 @@
 """
 Radial (Rotation) Volume Control
 ----------------------------------
-Pinch your thumb and index finger together and HOLD to grip the dial.
-While gripped, rotate your hand around your palm -- clockwise raises
-volume, counterclockwise lowers it. Release the pinch to let go.
+Pinch your thumb and index finger together once to TOGGLE volume
+control on. While on, rotate your hand around your palm -- clockwise
+raises volume, counterclockwise lowers it. Pinch again to toggle it
+off.
 
 This uses relative angle change (not absolute position), so there's no
-fixed "zero" position and no wraparound/orientation problem: you can
-grip, rotate, release, re-grip anywhere, and keep turning like an
-actual knob.
+fixed "zero" position and no wraparound/orientation problem: toggle on,
+rotate, toggle off, and pick back up anywhere.
 
 Controls:
     q  -> quit
@@ -39,21 +39,22 @@ hands = mp_hands.Hands(
     min_tracking_confidence=0.7,
 )
 
-GRIP_THRESHOLD = 40       # thumb-index pixel distance below this -> gripped
-ROTATION_SENSITIVITY = 0.4  # degrees of rotation -> % volume change
+PINCH_THRESHOLD = 30      # thumb-index pixel distance below this -> pinching
+ROTATION_SENSITIVITY = 1  # degrees of rotation -> % volume change
 
 
 def main():
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     if not cap.isOpened():
         print("ERROR: Could not open webcam.")
         return
 
-    is_gripped = False
+    control_active = False   # toggled on/off by each pinch
+    was_pinching = False     # previous frame's raw pinch state, for rising-edge detection
     last_angle = None
     vol_percent = volume_interface.GetMasterVolumeLevelScalar() * 100
 
@@ -80,22 +81,27 @@ def main():
             cursor = landmarks[12]
             cursor_x, cursor_y = cursor.x * w, cursor.y * h
 
-            # Grip check: thumb-index pinch distance
+            # Pinch state -- used only to detect the toggle moment (the
+            # instant the fingers first touch), not to gate rotation
+            # tracking itself.
             thumb_tip = landmarks[4]
             index_tip = landmarks[8]
             pinch_dist = math.hypot(
                 (thumb_tip.x - index_tip.x) * w,
                 (thumb_tip.y - index_tip.y) * h,
             )
-            currently_gripped = pinch_dist < GRIP_THRESHOLD
+            is_pinching = pinch_dist < PINCH_THRESHOLD
+
+            if is_pinching and not was_pinching:
+                # Rising edge -- fingers just came together this frame.
+                control_active = not control_active
+                last_angle = None  # avoid an angle jump right after toggling
+            was_pinching = is_pinching
 
             angle = math.degrees(math.atan2(cursor_y - anchor_y, cursor_x - anchor_x))
 
-            if currently_gripped:
-                if not is_gripped:
-                    # Just gripped this frame -- record starting angle,
-                    # don't apply a volume change yet (no prior angle to
-                    # compare against).
+            if control_active:
+                if last_angle is None:
                     last_angle = angle
                 else:
                     delta = angle - last_angle
@@ -103,18 +109,14 @@ def main():
                     vol_percent = np.clip(vol_percent + delta * ROTATION_SENSITIVITY, 0, 100)
                     volume_interface.SetMasterVolumeLevelScalar(vol_percent / 100, None)
                     last_angle = angle
-                is_gripped = True
 
                 cv2.line(frame, (int(anchor_x), int(anchor_y)), (int(cursor_x), int(cursor_y)), (0, 255, 0), 3)
                 cv2.circle(frame, (int(cursor_x), int(cursor_y)), 10, (0, 255, 0), cv2.FILLED)
-            else:
-                is_gripped = False
-                last_angle = None
 
             cv2.putText(
-                frame, "GRIPPED" if is_gripped else "Pinch to grip",
+                frame, "CONTROL ON" if control_active else "Pinch to toggle on",
                 (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                (0, 255, 0) if is_gripped else (200, 200, 200), 2,
+                (0, 255, 0) if control_active else (200, 200, 200), 2,
             )
 
         cv2.putText(
