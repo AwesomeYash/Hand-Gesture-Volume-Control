@@ -16,10 +16,10 @@ import cv2
 import mediapipe as mp
 
 mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.7)
+hands = mp_hands.Hands(max_num_hands = 1, min_detection_confidence = 0.7)
 
-FINGER_NAMES = ["Index", "Middle", "Ring", "Pinky"]
-FINGER_PAIRS = [(8, 5), (12, 9), (16, 13), (20, 17)]
+FINGER_NAMES = ["Index", "Middle", "Ring", "Pinky", "Thumb"]
+FINGER_PAIRS = [(8, 5), (12, 9), (16, 13), (20, 17), ()]
 WRIST = 0
 
 cap = cv2.VideoCapture(0)
